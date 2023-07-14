@@ -1,4 +1,4 @@
 # What
-a funny test repo..?
+a test repo..?
 # Why
 god knows why
