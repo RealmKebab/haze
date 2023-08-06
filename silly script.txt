@@ -1,0 +1,248 @@
+local player = game.Players.LocalPlayer
+local Character = player.Character or player.CharacterAdded:wait()
+local Humanoid = Character:WaitForChild("Humanoid")
+local walkSpeed = Humanoid.WalkSpeed
+local dragPart = script.Dragger
+
+player.CharacterAdded:Connect(function()
+	Character = player.Character
+	Humanoid = Character:WaitForChild("Humanoid")
+	Humanoid.Died:connect(function()
+		dragPart.Parent = nil
+	end)
+end)
+
+wait(1)
+
+local dragRangeMax = 20
+local dragRangeMin = 6
+local camera = workspace.CurrentCamera
+local mouse = player:GetMouse()
+local button1Down = false
+local dragRange = dragRangeMax
+local bodyPosition = Instance.new("BodyPosition")
+bodyPosition.Parent = dragPart
+bodyPosition.maxForce = Vector3.new(1, 1, 1) * 17000
+bodyPosition.D = 250
+
+local bodyGyro = Instance.new("BodyGyro", dragPart) 
+bodyGyro.maxTorque = Vector3.new(1, 1, 1) * 200
+bodyGyro.P = 200
+bodyGyro.D = 20
+
+local rotateCFrame = CFrame.new()
+local weld = Instance.new("Weld")
+weld.Parent = dragPart
+local interactPermission = require(game.ReplicatedStorage.Interaction.InteractionPermission)
+local clientIsDragging = game.ReplicatedStorage.Interaction.ClientIsDragging
+local carryAnimationTrack
+local draggingPart = false
+
+function click()
+	button1Down = true
+	local targetObject = input.GetMouseTarget()
+	if not canDrag(targetObject) then
+		return
+	end
+	
+	local mouseHit = input.GetMouseHit().Position
+	if (mouseHit - Character.Head.Position).magnitude > dragRangeMax then
+		return
+	end
+	
+	initializeDrag(targetObject, mouseHit)
+	rotateCFrame = CFrame.new()
+	carryAnimationTrack:Play(0.1, 1, 1)
+	
+	local dragIsFailing = 0 
+	local dragTime = 0
+	
+	while button1Down and canDrag(targetObject) do
+		local desiredPos = Character.Head.Position + (input.GetMouseHit().p - Character.Head.Position).unit * dragRange
+		local dragRay = Ray.new(Character.Head.Position, desiredPos - Character.Head.Position)
+		local part, pos = workspace:FindPartOnRayWithIgnoreList(dragRay, {Character, dragPart, targetObject.Parent})
+		
+		if part then
+			desiredPos = pos
+		end
+		
+		if (camera.CoordinateFrame.Position - Character.Head.Position).magnitude > 2 then
+			desiredPos = desiredPos + Vector3.new(0, 1.8, 0)
+		end
+		
+		moveDrag(desiredPos)
+		bodyGyro.cframe = CFrame.new(dragPart.Position, camera.CoordinateFrame.p) * rotateCFrame
+		local targParent = findHighestParent(targetObject) or targetObject	
+		local falling = Humanoid:GetState() == Enum.HumanoidStateType.Freefall or Humanoid:GetState() == Enum.HumanoidStateType.FallingDown
+			
+		if falling then
+			dragIsFailing = dragIsFailing + 1
+		elseif (dragPart.Position - desiredPos).magnitude > 5 then
+			dragIsFailing = dragIsFailing + 1
+		else
+			dragIsFailing = 0
+		end
+		if dragIsFailing > 16 then
+			break
+		end
+		
+		clientIsDragging:FireServer(targParent.Parent)	
+		wait()
+		dragTime = dragTime + 1
+	end
+	carryAnimationTrack:Stop()
+	endDrag()
+end
+
+function findHighestParent(child)
+	if not child or not child.Parent or child.Parent == workspace then
+		return nil
+	end
+	local ret = child.Parent:FindFirstChild("Owner") and child
+	return findHighestParent(child.Parent) or ret
+end
+
+function clickEnded()
+	button1Down = false
+end
+
+function holdDistanceChanged(dist)
+	dragRange = dragRangeMin + (1 - dist) * (dragRangeMax - dragRangeMin)
+end
+
+function canDrag(targetObject)
+	for _, instance in pairs(Character:GetChildren()) do
+		if instance:IsA("Tool") then
+			return false
+		end
+	end
+	if not (targetObject and not targetObject.Anchored and targetObject.Parent and Humanoid.Health > 0) then
+		return false
+	end
+	local originTargetObject = targetObject
+	targetObject = findHighestParent(targetObject) or targetObject
+	if game.Players:GetPlayerFromCharacter(targetObject.Parent.Parent) then
+		return false
+	end
+	bodyGyro.Parent = dragPart
+	
+	if not targetObject.Parent:FindFirstChild("Owner") then
+		return otherDraggable(targetObject, originTargetObject)
+	end
+	if not interactPermission:UserCanInteract(player, targetObject.Parent) then
+		return false
+	end
+
+	if targetObject.Parent:FindFirstChild("DraggableItem") then
+		return true
+	end
+	
+	return otherDraggable(targetObject, originTargetObject)
+end
+
+function otherDraggable(targetObject, originTargetObject)
+	local draggable = targetObject and targetObject.Parent and targetObject.Parent:FindFirstChild("DraggableItem") or originTargetObject and originTargetObject.Parent and originTargetObject.Parent:FindFirstChild("DraggableItem")
+	if draggable then
+		if draggable:FindFirstChild("NoRotate") then
+			bodyGyro.Parent  = nil
+		end
+		return true
+	end
+end
+
+function initializeDrag(targetObject,mouseHit)
+	draggingPart = true
+	mouse.TargetFilter = targetObject and findHighestParent(targetObject) and findHighestParent(targetObject).Parent or targetObject
+	dragPart.CFrame = CFrame.new(mouseHit, camera.CoordinateFrame.Position)
+	weld.Part0 = dragPart
+	weld.Part1 = targetObject
+	weld.C0 =  CFrame.new(mouseHit,camera.CoordinateFrame.Position):inverse() * targetObject.CFrame
+	weld.Parent = dragPart
+	dragPart.Parent = workspace
+end
+
+function endDrag()
+	mouse.TargetFilter = nil
+	dragPart.Parent = nil
+	draggingPart = false
+end
+
+local dragGuiState = ""
+function interactLoop()
+	while true do
+		wait()
+		local newState = ""
+		local mouseHit = input.GetMouseHit().Position
+		local targetObject = input.GetMouseTarget()
+		
+		if draggingPart then
+			newState = "Dragging"
+		elseif canDrag(targetObject) and not button1Down and (mouseHit - Character.Head.Position).magnitude < dragRangeMax then
+			newState = "Mouseover"
+		end
+		
+		if true then
+			dragGuiState = newState
+			setPlatformControls()
+			if dragGuiState == "" then
+				script.Parent.CanDrag.Visible = false
+				script.Parent.CanRotate.Visible = false
+			elseif dragGuiState ==  "Mouseover" then
+				script.Parent.CanDrag.Visible = false
+				script.Parent.CanRotate.Visible = false
+			elseif dragGuiState ==  "Dragging" then
+				script.Parent.CanDrag.Visible = false
+				script.Parent.CanRotate.Visible = false
+			end
+		end
+		
+	end
+end
+
+function moveDrag(pos)
+	bodyPosition.position = pos
+end
+local rotateSpeedReduce = 0.036
+local lastRotateTick
+function rotate(amount, speed)
+	if not draggingPart then
+		if not player:FindFirstChild("IsChatting") or player.IsChatting.Value < 2 then
+			Humanoid.WalkSpeed = walkSpeed
+		end
+		return
+	end
+	
+	if Humanoid.WalkSpeed > 1 then
+		walkSpeed = Humanoid.WalkSpeed
+		Humanoid.WalkSpeed = 0
+	end
+	
+	lastRotateTick = tick()
+	local thisRotateTick = lastRotateTick
+	
+	while draggingPart and amount.magnitude > 0 and lastRotateTick == thisRotateTick do
+		rotateCFrame = CFrame.Angles(0, -amount.X * rotateSpeedReduce, 0) * CFrame.Angles(amount.Y * rotateSpeedReduce, 0, 0) * rotateCFrame
+		wait()
+	end
+	
+	if amount.magnitude == 0 then
+		if not player:FindFirstChild("IsChatting") or  player.IsChatting.Value < 2 then
+			Humanoid.WalkSpeed = walkSpeed
+		end
+	end
+end
+
+wait(1)
+carryAnimationTrack = Humanoid:LoadAnimation(script:WaitForChild("CarryItem"))
+input = require(script:WaitForChild("UserInput"))
+input.ClickBegan(click, holdDistanceChanged)
+input.ClickEnded(clickEnded)
+input.Rotate(rotate)
+
+function setPlatformControls()
+	script.Parent.CanDrag.PlatformButton.Image = script.Parent.CanDrag.PlatformButton.PC.Value
+	script.Parent.CanDrag.PlatformButton.KeyLabel.Text = "CLICK"
+	script.Parent.CanRotate.PlatformButton.Image = script.Parent.CanRotate.PlatformButton.PC.Value
+	script.Parent.CanRotate.PlatformButton.KeyLabel.Text = "SHIFT + WASD"
+end
+interactLoop()
